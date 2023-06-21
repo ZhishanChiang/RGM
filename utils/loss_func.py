@@ -91,7 +91,6 @@ class ClassifyLoss(nn.Module):
 
         return loss / n_sum
 
-
 if __name__ == '__main__':
     d1 = torch.tensor([[1., 2.],
                        [2., 3.],

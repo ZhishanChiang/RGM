@@ -9,7 +9,6 @@ DATASET:
   TRANS_MAG: 0.5
   PARTIAL_P_KEEP:
     - 0.7
-    - 0.7
 
 # Pairwise data2d configuration
 PAIR:
@@ -73,8 +72,8 @@ TRAIN:
 
 # Evaluation settings and PCK metric
 EVAL:
-  ITERATION: True
-  CYCLE: True
+  ITERATION: False
+  CYCLE: False
   ITERATION_NUM: 2
   EPOCH: -1  # epoch to be tested
 

@@ -32,7 +32,7 @@ class SplitSourceRef:
 
 
 class Resampler:
-    def __init__(self, num: int):
+    def __init__(self, num: int, partial_p_keep):
         """Resamples a point cloud containing N points to one containing M
 
         Guaranteed to have no repeated points if M <= N.
@@ -43,6 +43,7 @@ class Resampler:
 
         """
         self.num = num
+        self.partial_p_keep = partial_p_keep
 
     def __call__(self, sample):
 
@@ -55,7 +56,8 @@ class Resampler:
             if 'crop_proportion' not in sample:
                 src_size, ref_size = self.num, self.num
             elif len(sample['crop_proportion']) == 1:
-                src_size = math.ceil(sample['crop_proportion'][0] * self.num)
+                # src_size = math.ceil(sample['crop_proportion'][0] * self.num)
+                src_size = self.num
                 ref_size = self.num
             elif len(sample['crop_proportion']) == 2:
                 src_size = math.ceil(sample['crop_proportion'][0] * self.num)
@@ -63,13 +65,20 @@ class Resampler:
             else:
                 raise ValueError('Crop proportion must have 1 or 2 elements')
 
-            if 'tranflag' in sample:
-                sample['points_src'] = self._resample(sample['points_src'], src_size)
-                sample['points_ref'] = self._resample(sample['points_ref'], ref_size)
+            if 'tranflag' in sample:  
+                sample['points_src'],src_idx = self._resample(sample['points_src'], src_size)
+                sample['points_ref'],tar_idx = self._resample(sample['points_ref'], ref_size)
             else:
-                sample['points_src'] = self._resample(sample['points_src'], src_size)
+                sample['points_src'],src_idx = self._resample(sample['points_src'], src_size)
                 sample['points_ref'] = sample['points_src']
-
+            if len(sample['crop_proportion']) == 1:
+                ori_points=sample['ori_ref']
+                crop_idx=sample['mmask_src']                      #crop idx
+                sample['mpoints_tgtidx'] = crop_idx[tar_idx]
+                sample['mpoints_tgt2src'] = sample['points_ref'][sample['mpoints_tgtidx']==False,:]
+            pad_num = 400
+            cur_num = sample['mpoints_tgt2src'].shape[0]
+            sample['mpoints_tgt2src'] = np.pad(sample['mpoints_tgt2src'],((0,pad_num-cur_num),(0,0)),'constant')
         return sample
 
     @staticmethod
@@ -81,16 +90,15 @@ class Resampler:
         If the input point cloud has > k points, it is guaranteed the
         resampled point cloud does not contain repeated point.
         """
-
         if k <= points.shape[0]:
-            rand_idxs = np.random.choice(points.shape[0], k, replace=False)
-            return points[rand_idxs, :]
+            rand_idxs = np.random.choice(points.shape[0], k, replace=False) #select k elements without duplicate from [0,points.shape[0]] 
+            return points[rand_idxs, :],rand_idxs
         elif points.shape[0] == k:
-            return points
+            return points,np.random.choice(k,k,replace=False)
         else:
             rand_idxs = np.concatenate([np.random.choice(points.shape[0], points.shape[0], replace=False),
                                         np.random.choice(points.shape[0], k - points.shape[0], replace=True)])
-            return points[rand_idxs, :]
+            return points[rand_idxs, :],rand_idxs
 
 
 class FixedResampler(Resampler):
@@ -127,9 +135,15 @@ class RandomJitter:
         else:
             sample['points_src'] = self.jitter(sample['points_src'])
             sample['points_ref'] = self.jitter(sample['points_ref'])
-
         return sample
 
+def normalize_pc(points):
+    centroid = np.mean(points, axis=0)
+    points -= centroid
+    furthest_distance = np.max(np.sqrt(np.sum(abs(points)**2,axis=-1)))
+    points /= furthest_distance
+
+    return points
 
 class RandomCrop:
     """Randomly crops the *source* point cloud, approximately retaining half the points
@@ -159,8 +173,7 @@ class RandomCrop:
                     mask[np.where(mask==False)[0].tolist()[-(int(np.ceil(p_keep*points.shape[0]))-sum(mask)):]]=True
                 elif sum(mask)>int(np.ceil(p_keep*points.shape[0])):
                     mask[np.where(mask==True)[0].tolist()[-(sum(mask)-int(np.ceil(p_keep*points.shape[0]))):]]=False
-
-        return points[mask, :]
+        return points[mask, :],mask
 
     def __call__(self, sample):
 
@@ -170,15 +183,68 @@ class RandomCrop:
 
         if 'deterministic' in sample and sample['deterministic']:
             np.random.seed(sample['idx'])
-
+    
         if len(self.p_keep) == 1:
-            sample['points_src'] = self.crop(sample['points_src'], self.p_keep[0])
+            sample['ori_ref']=sample['points_ref']
+            sample['points_src'],sample['mmask_src'] = self.crop(sample['points_src'], self.p_keep[0])
+            sample['oripoints_ref']=sample['points_ref']
+            sample['oripoints_src']=sample['points_src']
         else:
-            sample['points_src'] = self.crop(sample['points_src'], self.p_keep[0])
-            sample['points_ref'] = self.crop(sample['points_ref'], self.p_keep[1])
+            sample['points_src'],sample['mmask_src'] = self.crop(sample['points_src'], self.p_keep[0])
+            sample['points_ref'],sample['mmask_ref'] = self.crop(sample['points_ref'], self.p_keep[1])
         return sample
 
+class RandomCrop1:
+    """Randomly crops the *source* point cloud, approximately retaining half the points
 
+    A direction is randomly sampled from S2, and we retain points which lie within the
+    half-space oriented in this direction.
+    If p_keep != 0.5, we shift the plane until approximately p_keep points are retained
+    """
+    def __init__(self, p_keep: List = None):
+        if p_keep is None:
+            p_keep = [0.7, 0.7]  # Crop both clouds to 70%
+        self.p_keep = np.array(p_keep, dtype=np.float32)
+
+    @staticmethod
+    def crop(points, p_keep):
+        rand_xyz = uniform_2_sphere()
+        centroid = np.mean(points[:, :3], axis=0)
+        points_centered = points[:, :3] - centroid
+
+        dist_from_plane = np.dot(points_centered, rand_xyz)
+        p_keep_real=np.random.uniform(p_keep,1.0)
+        if p_keep_real == 0.5:
+            mask = dist_from_plane > 0
+        else:
+            mask = dist_from_plane > np.percentile(dist_from_plane, (1.0 - p_keep_real) * 100)
+            if cfg.EXPERIMENT.SHAPENET:
+                if sum(mask)<int(np.ceil(p_keep_real*points.shape[0])):
+                    mask[np.where(mask==False)[0].tolist()[-(int(np.ceil(p_keep_real*points.shape[0]))-sum(mask)):]]=True
+                elif sum(mask)>int(np.ceil(p_keep_real*points.shape[0])):
+                    mask[np.where(mask==True)[0].tolist()[-(sum(mask)-int(np.ceil(p_keep_real*points.shape[0]))):]]=False
+        return points[mask, :],mask,p_keep_real
+
+    def __call__(self, sample):
+
+        sample['crop_proportion'] = self.p_keep
+        if np.all(self.p_keep == 1.0):
+            return sample  # No need crop
+
+        if 'deterministic' in sample and sample['deterministic']:
+            np.random.seed(sample['idx'])
+    
+        if len(self.p_keep) == 1:
+            sample['ori_ref']=sample['points_ref']
+            sample['points_src'],sample['mmask_src'],sample['src_res_rate'] = self.crop(sample['points_src'], self.p_keep[0])
+            sample['oripoints_ref']=sample['points_ref']
+            sample['oripoints_src']=sample['points_src']
+        else:
+            sample['points_src'],sample['mmask_src'],sample['src_res_rate'] = self.crop(sample['points_src'], self.p_keep[0])
+            sample['points_ref'],sample['mmask_ref'],sample['ref_res_rate'] = self.crop(sample['points_ref'], self.p_keep[1])
+        return sample
+
+    
 class RandomCropinv:
     """Randomly crops the *source* point cloud, approximately retaining half the points
 
@@ -243,6 +309,7 @@ class RandomTransformSE3:
         self._rot_mag = rot_mag
         self._trans_mag = trans_mag
         self._random_mag = random_mag
+        self.euler = None
 
     def generate_transform(self):
         """Generate a random SE3 transformation (3, 4) """
@@ -262,8 +329,7 @@ class RandomTransformSE3:
         # Generate translation
         rand_trans = np.random.uniform(-trans_mag, trans_mag, 3)
         rand_SE3 = np.concatenate((rand_rot, rand_trans[:, None]), axis=1).astype(np.float32)
-
-        return rand_SE3
+        return rand_SE3,_
 
     def apply_transform(self, p0, transform_mat):
         p1 = se3.transform(transform_mat, p0[:, :3])
@@ -277,7 +343,8 @@ class RandomTransformSE3:
         return p1, gt, igt
 
     def transform(self, tensor):
-        transform_mat = self.generate_transform()
+        transform_mat,euler = self.generate_transform()
+        self.euler=euler
         return self.apply_transform(tensor, transform_mat)
 
     def __call__(self, sample):
@@ -287,11 +354,12 @@ class RandomTransformSE3:
             np.random.seed(sample['idx'])
 
         if 'points' in sample:
-            sample['points'], _, _ = self.transform(sample['points'])
+            sample['points'], _, _,sample['euler_angle'] = self.transform(sample['points'])
         else:
-            src_transformed, transform_r_s, transform_s_r = self.transform(sample['points_src'])
-            sample['transform_gt'] = transform_r_s  # Apply to source to get reference
-            sample['points_src'] = src_transformed
+            src_transformed, transform_r_s, transform_s_r= self.transform(sample['points_src'])
+            sample['euler_angle']=self.euler
+            sample['transform_gt'] = transform_r_s  # Apply to source to c reference,ref2src
+            sample['points_src'] = src_transformed  
 
         return sample
 
@@ -336,7 +404,7 @@ class RandomTransformSE3_euler(RandomTransformSE3):
         t_ab = np.random.uniform(-trans_mag, trans_mag, 3)
 
         rand_SE3 = np.concatenate((R_ab, t_ab[:, None]), axis=1).astype(np.float32)
-        return rand_SE3
+        return rand_SE3,[anglex*180/np.pi,angley*180/np.pi,anglez*180/np.pi]
 
 
 class RandomRotatorZ(RandomTransformSE3):
@@ -366,7 +434,7 @@ def nearest_neighbor(src, dst):
         indices: dst indices of the nearest neighbor
     '''
 
-    assert src.shape == dst.shape
+    #assert src.shape == dst.shape
 
     neigh = NearestNeighbors(n_neighbors=1)
     neigh.fit(dst)
@@ -386,6 +454,7 @@ class ShufflePoints:
             srcperm = np.random.permutation(sample['points_src'].shape[0])
             sample['points_ref'] = sample['points_ref'][refperm, :]
             sample['points_src'] = sample['points_src'][srcperm, :]
+            sample['mpoints_tgtidx'] = sample['mpoints_tgtidx'][refperm]
             if 'jitterflag' in sample or 'corpflag' in sample:
                 perm_mat = np.zeros((sample['points_src'].shape[0], sample['points_ref'].shape[0]))
                 inlier_src = np.zeros((sample['points_src'].shape[0], 1))

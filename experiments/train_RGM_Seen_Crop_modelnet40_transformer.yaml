@@ -9,7 +9,6 @@ DATASET:
   TRANS_MAG: 0.5
   PARTIAL_P_KEEP:
     - 0.7
-    - 0.7
 
 # Pairwise data2d configuration
 PAIR:
@@ -60,16 +59,19 @@ VISDOM:
 TRAIN:
   # start, end epochs
   START_EPOCH: 0
-  NUM_EPOCHS: 200
+  NUM_EPOCHS: 230
 
   # learning rate
   OPTIM: SGD
   LR: 1.0e-3
   MOMENTUM: 0.9
-  LR_DECAY: 0.2
+  LR_DECAY: 0.1
   LR_STEP:  # (in epochs)
+    - 60
     - 120
-    - 140
+    - 180
+    - 200
+    
 
 # Evaluation settings and PCK metric
 EVAL:

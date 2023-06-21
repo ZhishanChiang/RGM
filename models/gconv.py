@@ -14,12 +14,12 @@ class Gconv(nn.Module):
         self.a_fc = nn.Linear(self.num_inputs, self.num_outputs)
         self.u_fc = nn.Linear(self.num_inputs, self.num_outputs)
 
-    def forward(self, A, x, norm=True):
+    def forward(self, A, x, norm=True):   #A denotes the egde info 
         if norm is True:
             A = F.normalize(A, p=1, dim=-2)
-
         ax = self.a_fc(x)
         ux = self.u_fc(x)
+        print(A.shape)
         x = torch.bmm(A, F.relu(ax)) + F.relu(ux) # has size (bs, N, num_outputs)
 
         return x

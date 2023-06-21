@@ -2,7 +2,6 @@ import torch
 import scipy.optimize as opt
 import numpy as np
 
-
 def k_largest_index_argsort(a, k):
     idx = np.argsort(a.ravel())[:k]
     return np.column_stack(np.unravel_index(idx, a.shape))

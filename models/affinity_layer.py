@@ -30,3 +30,15 @@ class Affinity(nn.Module):
         M = torch.matmul(X, (self.A + self.A.transpose(0, 1).contiguous()) / 2)
         M = torch.matmul(M, Y.transpose(1, 2).contiguous())
         return M
+
+class Modified_Affinity(nn.Module):
+    def __init__(self,d):
+        super(Modified_Affinity,self).__init__()
+        self.d=d
+    def forward(self,X,Y):
+        X_v=torch.norm(X,p=2,dim=-1,keepdim=True)
+        Y_v=torch.norm(Y,p=2,dim=-1,keepdim=True)
+        div=torch.bmm(X_v,Y_v.transpose(2,1))
+        M=torch.bmm(X,Y.transpose(2,1))
+        return M/div
+        

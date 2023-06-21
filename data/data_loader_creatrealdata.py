@@ -609,6 +609,5 @@ if __name__ == '__main__':
     train = ModelNet40(1024)
     test = ModelNet40(1024, 'test')
     for data in train:
-        print(len(data))
         break
 

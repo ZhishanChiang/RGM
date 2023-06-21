@@ -21,8 +21,8 @@ _raw_features_sizes = {'xyz': 3, 'lxyz': 3, 'gxyz': 3, 'ppf': 4, 'pcf': 6}
 # Part of the code is referred from: http://nlp.seas.harvard.edu/2018/04/03/attention.html#positional-encoding
 
 def nearest_neighbor(src, dst):
-    inner = -2 * torch.matmul(src.transpose(1, 0).contiguous(), dst)  # src, dst (num_dims, num_points)
-    distances = -torch.sum(src ** 2, dim=0, keepdim=True).transpose(1, 0).contiguous() - inner - torch.sum(dst ** 2,
+    inner = -2 * torch.matmul(src.transpose(1, 0), dst)  # src, dst (num_dims, num_points)
+    distances = -torch.sum(src ** 2, dim=0, keepdim=True).transpose(1, 0) - inner - torch.sum(dst ** 2,
                                                                                                            dim=0,
                                                                                                            keepdim=True)
     distances, indices = distances.topk(k=1, dim=-1)
@@ -30,10 +30,9 @@ def nearest_neighbor(src, dst):
 
 
 def knn(x, k):
-    inner = -2 * torch.matmul(x.transpose(2, 1).contiguous(), x)
+    inner = -2 * torch.matmul(x.transpose(2, 1), x)
     xx = torch.sum(x ** 2, dim=1, keepdim=True)
-    pairwise_distance = -xx - inner - xx.transpose(2, 1).contiguous()
-
+    pairwise_distance = -xx - inner - xx.transpose(2, 1)
     idx = pairwise_distance.topk(k=k, dim=-1)[1]  # (batch_size, num_points, k)
     return idx
 
@@ -78,20 +77,22 @@ def get_graph_feature(data, feature_name, k=20):
 
     _, num_dims, _ = xyz.size()
 
-    xyz = xyz.transpose(2, 1).contiguous()
+    xyz = xyz.transpose(2, 1)
     # (batch_size, num_points, num_dims)  -> (batch_size*num_points, num_dims)
     #  batch_size * num_points * k + range(0, batch_size*num_points)
 
     # gxyz
-    neighbor_gxyz = xyz.view(batch_size * num_points, -1)[idx, :]
+    neighbor_gxyz = (xyz.contiguous()).view(batch_size * num_points, -1)[idx, :]
     neighbor_gxyz = neighbor_gxyz.view(batch_size, num_points, k, num_dims)
     if 'gxyz' in feature_name:
         feature = torch.cat((feature, neighbor_gxyz), dim=3)
 
     # xyz
     xyz = xyz.view(batch_size, num_points, 1, num_dims).repeat(1, 1, k, 1)
+    # dens = torch.unsqueeze(torch.mean(torch.sum((feature-xyz)**2,dim=-1),dim=-1),dim=-1)
+    
+    
     feature = torch.cat((feature, xyz), dim=3)
-
 
     # lxyz
     if 'lxyz' in feature_name:
@@ -153,7 +154,7 @@ class DGCNN(nn.Module):
 
     def forward(self, xyz):
 
-        xyz = xyz.permute(0, 2, 1).contiguous()  # (B, 3, N)
+        xyz = xyz.permute(0, 2, 1)  # (B, 3, N)
 
         batch_size, num_dims, num_points = xyz.size()
         x = get_graph_feature(xyz, self.features, self.neighboursnum)   # (B, C, N, n)
@@ -174,8 +175,6 @@ class DGCNN(nn.Module):
         x_node = x.squeeze(-1)
 
         x_edge = F.relu(self.bn5(self.conv5(x))).view(batch_size, -1, num_points)
-        # if torch.sum(torch.isnan(x_edge)):
-        #     print('discover nan value')
         return x_node, x_edge
 
 
@@ -189,15 +188,15 @@ class Classify1(nn.Module):
         self.bn2 = nn.BatchNorm1d(128)
 
     def forward(self, x, y):
-        x = x.permute(0, 2, 1).contiguous()
-        y = y.permute(0, 2, 1).contiguous()
+        x = x.permute(0, 2, 1)
+        y = y.permute(0, 2, 1)
         batch_size, _, num_points = x.size()
         x = get_graph_feature_cross(x, y)   #(B, K, N)
         x = F.relu(self.bn1(self.conv1(x)))
 
         x = F.relu(self.bn2(self.conv2(x)))
 
-        x_inlier = torch.sigmoid(self.conv3(x)).permute(0,2,1).contiguous()
+        x_inlier = torch.sigmoid(self.conv3(x)).permute(0,2,1)
 
         # x_edge = F.relu(self.bn5(self.conv5(x))).view(batch_size, -1, num_points)
         if torch.sum(torch.isnan(x_inlier)):
@@ -206,10 +205,10 @@ class Classify1(nn.Module):
 
 
 def knn_cross(x, y, k):
-    inner = -2 * torch.matmul(x.transpose(2, 1).contiguous(), y)
+    inner = -2 * torch.matmul(x.transpose(2, 1), y)
     xx = torch.sum(x ** 2, dim=1, keepdim=True)
     yy = torch.sum(y ** 2, dim=1, keepdim=True)
-    pairwise_distance = -xx - inner - yy.transpose(2, 1).contiguous()
+    pairwise_distance = -xx - inner - yy.transpose(2, 1)
 
     dist = pairwise_distance.topk(k=k, dim=-1)[0]  # (batch_size, num_points, k)
     return dist
@@ -218,7 +217,7 @@ def knn_cross(x, y, k):
 def get_graph_feature_cross(x, y, k=20):
     # x = x.squeeze()
     dist = knn_cross(x, y, k=k)  # (batch_size, num_points, k)
-    dist = dist.permute(0, 2, 1).contiguous()
+    dist = dist.permute(0, 2, 1)
     return dist
 
 
@@ -249,7 +248,7 @@ class Classify2(nn.Module):
 
         x = F.relu(self.bn2(self.conv2(x)))
 
-        x_inlier = torch.sigmoid(self.conv3(x)).permute(0,2,1).contiguous()
+        x_inlier = torch.sigmoid(self.conv3(x)).permute(0,2,1)
 
         # x_edge = F.relu(self.bn5(self.conv5(x))).view(batch_size, -1, num_points)
         if torch.sum(torch.isnan(x_inlier)):
@@ -267,14 +266,14 @@ class Classify(nn.Module):
         self.bn2 = nn.BatchNorm1d(128)
 
     def forward(self, x):
-        x = x.permute(0,2,1).contiguous()
+        x = x.permute(0,2,1)
         batch_size, _, num_points = x.size()
         # x = get_graph_feature(x)
         x = F.relu(self.bn1(self.conv1(x)))
 
         x = F.relu(self.bn2(self.conv2(x)))
 
-        x_inlier = torch.sigmoid(self.conv3(x)).permute(0,2,1).contiguous()
+        x_inlier = torch.sigmoid(self.conv3(x)).permute(0,2,1)
 
         # x_edge = F.relu(self.bn5(self.conv5(x))).view(batch_size, -1, num_points)
         if torch.sum(torch.isnan(x_inlier)):
@@ -316,3 +315,140 @@ class s_weight(nn.Module):
         beta = F.softplus(raw_weights[:, 0])
 
         return beta
+
+class DGCNN_SDIM(nn.Module):
+    def __init__(self, features, neighboursnum, emb_dims=512, dim=None, ori=False):
+        super(DGCNN_SDIM, self).__init__()
+
+        # 确定输入的点云信息
+        self.features = features
+        self.neighboursnum = neighboursnum
+        self.feat_dims=dim
+        self.emb_dims=emb_dims
+        self.ori=ori
+
+        self.conv1 = nn.Conv2d(self.feat_dims[0], self.feat_dims[1], kernel_size=1, bias=False)   
+        self.conv2 = nn.Conv2d(self.feat_dims[1], self.feat_dims[2], kernel_size=1, bias=False)
+        self.conv3 = nn.Conv2d(self.feat_dims[2], self.feat_dims[3], kernel_size=1, bias=False)
+        self.conv4 = nn.Conv2d(self.feat_dims[3], self.feat_dims[4], kernel_size=1, bias=False)
+        self.conv5 = nn.Conv2d(self.emb_dims, self.emb_dims, kernel_size=1, bias=False)  #conv cancatednated features
+        self.bn1 = nn.BatchNorm2d(self.feat_dims[1])
+        self.bn2 = nn.BatchNorm2d(self.feat_dims[2])
+        self.bn3 = nn.BatchNorm2d(self.feat_dims[3])
+        self.bn4 = nn.BatchNorm2d(self.feat_dims[4])
+        self.bn5 = nn.BatchNorm2d(self.emb_dims)
+
+    def forward(self, xyz):
+        xyz=xyz.permute(0,2,1)
+        batch_size, num_dims, num_points = xyz.size()
+        if self.ori:
+            x = get_graph_feature(xyz, self.features, self.neighboursnum)   # (B, C, embdim, n)
+        else:
+            x = torch.unsqueeze(xyz,dim=-1)
+
+        x = F.relu(self.bn1(self.conv1(x)))
+        x1 = x.max(dim=-1, keepdim=True)[0]
+
+        x = F.relu(self.bn2(self.conv2(x)))
+        x2 = x.max(dim=-1, keepdim=True)[0]
+
+        x = F.relu(self.bn3(self.conv3(x)))
+        x3 = x.max(dim=-1, keepdim=True)[0]
+
+        x = F.relu(self.bn4(self.conv4(x)))
+        x4 = x.max(dim=-1, keepdim=True)[0]
+        
+        x = torch.cat((x1, x2, x3, x4), dim=1)   #(64+64+128+256)
+        x_node = x.squeeze(-1)
+
+        x_edge = F.relu(self.bn5(self.conv5(x))).view(batch_size, -1, num_points)
+        return x_node, x_edge
+    
+class DGCNN_SDIM_no_BN(nn.Module):
+    def __init__(self, features, neighboursnum, emb_dims=512, dim=None, ori=False):
+        super(DGCNN_SDIM_no_BN, self).__init__()
+
+        # 确定输入的点云信息
+        self.features = features
+        self.neighboursnum = neighboursnum
+        self.feat_dims=dim
+        self.emb_dims=emb_dims
+        self.ori=ori
+
+        self.conv1 = nn.Conv2d(self.feat_dims[0], self.feat_dims[1], kernel_size=1, bias=False)   
+        self.conv2 = nn.Conv2d(self.feat_dims[1], self.feat_dims[2], kernel_size=1, bias=False)
+        self.conv3 = nn.Conv2d(self.feat_dims[2], self.feat_dims[3], kernel_size=1, bias=False)
+        self.conv4 = nn.Conv2d(self.feat_dims[3], self.feat_dims[4], kernel_size=1, bias=False)
+        self.conv5 = nn.Conv2d(self.emb_dims, self.emb_dims, kernel_size=1, bias=False)  #conv cancatednated features
+        
+    def forward(self, xyz):
+        xyz=xyz.permute(0,2,1)
+        batch_size, num_dims, num_points = xyz.size()
+        if self.ori:
+            x = get_graph_feature(xyz, self.features, self.neighboursnum)   # (B, C, N, k)
+        else:
+            x = torch.unsqueeze(xyz,dim=-1)
+        x = F.relu(self.conv1(x))
+        x1 = x.max(dim=-1, keepdim=True)[0]
+
+        x = F.relu(self.conv2(x))
+        x2 = x.max(dim=-1, keepdim=True)[0]
+
+        x = F.relu(self.conv3(x))
+        x3 = x.max(dim=-1, keepdim=True)[0]
+
+        x = F.relu(self.conv4(x))
+        x4 = x.max(dim=-1, keepdim=True)[0]
+        
+        x = torch.cat((x1, x2, x3, x4), dim=1)   #(64+64+128+256)
+        x_node = x.squeeze(-1)
+
+        x_edge = F.relu(self.conv5(x)).view(batch_size, -1, num_points)
+        return x_node, x_edge
+    
+class DGCNN_ori(nn.Module):
+    def __init__(self, features, neighboursnum, emb_dims=512):
+        super(DGCNN_ori, self).__init__()
+
+        # 确定输入的点云信息
+        self.features = features
+        self.neighboursnum = neighboursnum
+        raw_dim = sum([_raw_features_sizes[f] for f in self.features])  # number of channels after concat
+
+        self.conv1 = nn.Conv2d(raw_dim, 64, kernel_size=1, bias=False)
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=1, bias=False)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=1, bias=False)
+        self.conv4 = nn.Conv2d(128, 256, kernel_size=1, bias=False)
+        self.conv5 = nn.Conv2d(512, emb_dims, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.bn3 = nn.BatchNorm2d(128)
+        self.bn4 = nn.BatchNorm2d(256)
+        self.bn5 = nn.BatchNorm2d(emb_dims)
+
+    def forward(self, xyz):
+
+        xyz = xyz.permute(0, 2, 1).contiguous()  # (B, 3, N)
+
+        batch_size, num_dims, num_points = xyz.size()
+        x = get_graph_feature(xyz, self.features, self.neighboursnum)   # (B, C, N, n)
+
+        x = F.relu(self.bn1(self.conv1(x)))
+        x1 = x.max(dim=-1, keepdim=True)[0]
+
+        x = F.relu(self.bn2(self.conv2(x)))
+        x2 = x.max(dim=-1, keepdim=True)[0]
+
+        x = F.relu(self.bn3(self.conv3(x)))
+        x3 = x.max(dim=-1, keepdim=True)[0]
+
+        x = F.relu(self.bn4(self.conv4(x)))
+        x4 = x.max(dim=-1, keepdim=True)[0]
+
+        x = torch.cat((x1, x2, x3, x4), dim=1)
+        x_node = x.squeeze(-1)
+
+        x_edge = F.relu(self.bn5(self.conv5(x))).view(batch_size, -1, num_points)
+        # if torch.sum(torch.isnan(x_edge)):
+        #     print('discover nan value')
+        return x_node, x_edge

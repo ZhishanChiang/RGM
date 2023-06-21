@@ -16,9 +16,10 @@ def clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
 
-def attention(query, key, value, mask=None, dropout=None):
+def attention(query, key, value, mask=None, dropout=None):   #attention/masked attention
     d_k = query.size(-1)
     scores = torch.matmul(query, key.transpose(-2, -1).contiguous()) / math.sqrt(d_k)
+    print("mask********",mask)
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9)
     p_attn = F.softmax(scores, dim=-1)
@@ -31,7 +32,7 @@ class EncoderDecoder(nn.Module):
     other models.
     """
 
-    def __init__(self, encoder, decoder, src_embed, tgt_embed, generator):
+    def __init__(self, encoder, decoder, src_embed, tgt_embed, generator):  #Encoder, Decoder, sequential(), sequential()
         super(EncoderDecoder, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
@@ -39,7 +40,7 @@ class EncoderDecoder(nn.Module):
         self.tgt_embed = tgt_embed
         self.generator = generator
 
-    def forward(self, src, tgt, src_mask, tgt_mask):
+    def forward(self, src, tgt, src_mask, tgt_mask):    #src=src_emb,tar=tar_emb
         "Take in and process masked src and target sequences."
         return self.decode(self.encode(src, src_mask), src_mask,
                            tgt, tgt_mask)
@@ -47,7 +48,7 @@ class EncoderDecoder(nn.Module):
     def encode(self, src, src_mask):
         return self.encoder(self.src_embed(src), src_mask)
 
-    def decode(self, memory, src_mask, tgt, tgt_mask):
+    def decode(self, memory, src_mask, tgt, tgt_mask):   #memory=src_mask=None, src_mask=tgt, tgt_mask=None
         return self.generator(self.decoder(self.tgt_embed(tgt), memory, src_mask, tgt_mask))
 
 
@@ -77,7 +78,7 @@ class Generator(nn.Module):
 class Encoder(nn.Module):
     def __init__(self, layer, N):
         super(Encoder, self).__init__()
-        self.layers = clones(layer, N)
+        self.layers = clones(layer, N)          #n*layer
         self.norm = LayerNorm(layer.size)
 
     def forward(self, x, mask):
@@ -93,8 +94,8 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self.layers = clones(layer, N)
         self.norm = LayerNorm(layer.size)
-
-    def forward(self, x, memory, src_mask, tgt_mask):
+ 
+    def forward(self, x, memory, src_mask, tgt_mask):   #src None tgt None
         for layer in self.layers:
             x = layer(x, memory, src_mask, tgt_mask)
         return self.norm(x)
@@ -138,7 +139,7 @@ class EncoderLayer(nn.Module):
 class DecoderLayer(nn.Module):
     "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
 
-    def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
+    def __init__(self, size, self_attn, src_attn, feed_forward, dropout): #self_attn,src_attn multihead attn
         super(DecoderLayer, self).__init__()
         self.size = size
         self.self_attn = self_attn
@@ -146,23 +147,23 @@ class DecoderLayer(nn.Module):
         self.feed_forward = feed_forward
         self.sublayer = clones(SublayerConnection(size, dropout), 3)
 
-    def forward(self, x, memory, src_mask, tgt_mask):
+    def forward(self, x, memory, src_mask, tgt_mask):  #src None tgt None
         "Follow Figure 1 (right) for connections."
         m = memory
-        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask)) #query key value mask
         x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
         return self.sublayer[2](x, self.feed_forward)
 
 
 class MultiHeadedAttention(nn.Module):
-    def __init__(self, h, d_model, dropout=0.1):
+    def __init__(self, h, d_model, dropout=0.1):   #heads_num,emb_dim
         "Take in model size and number of heads."
         super(MultiHeadedAttention, self).__init__()
         assert d_model % h == 0
         # We assume d_v always equals d_k
         self.d_k = d_model // h
         self.h = h
-        self.linears = clones(nn.Linear(d_model, d_model), 4)
+        self.linears = clones(nn.Linear(d_model, d_model), 4)   #mlp
         self.attn = None
         self.dropout = None
 
@@ -234,3 +235,4 @@ class Transformer(nn.Module):
         tgt_embedding = self.model(src, tgt, None, None).transpose(2, 1).contiguous()
         src_embedding = self.model(tgt, src, None, None).transpose(2, 1).contiguous()
         return src_embedding, tgt_embedding
+    

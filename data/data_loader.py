@@ -1,7 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
-
 import os
 import glob
 import h5py
@@ -15,11 +13,14 @@ import torchvision
 from utils.build_graphs import build_graphs
 import data.data_transform_syndata as Transforms
 import data.data_transform_realdata as Transformsreal
+from data.data_transform_syndata import normalize_pc
 # import utils.data_transform4 as Transforms
 
 from utils.config import cfg
+from utils.pc_processing import private_data_preprocessing
 
 import open3d
+import pandas as pd
 
 
 # Part of the code is referred from: https://github.com/charlesq34/pointnet
@@ -129,7 +130,8 @@ def load_data_shapenet(partition='test'):
     all_label=all['label']
     return all_data, all_label
 
-
+################################
+#get transforms
 def get_transforms(partition: str, num_points: int = 1024,
                    noise_type: str = 'clean', rot_mag: float = 45.0,
                    trans_mag: float = 0.5, partial_p_keep: List = None):
@@ -190,20 +192,21 @@ def get_transforms(partition: str, num_points: int = 1024,
         # Both source and reference point clouds cropped, plus same noise in "jitter"
         if partition == 'train':
             transforms = [Transforms.SetCorpFlag(),
-                          Transforms.SplitSourceRef(),
-                          Transforms.Resampler(num_points),
+                          Transforms.SplitSourceRef(),  
+                          #Transforms.Resampler(num_points),  
                           Transforms.RandomTransformSE3_euler(rot_mag=rot_mag, trans_mag=trans_mag),
-                          Transforms.RandomCrop(partial_p_keep),
+                          Transforms.RandomCrop1(partial_p_keep),   #####
+                          Transforms.Resampler(num_points,partial_p_keep),         #####
                           Transforms.RandomJitter(),
                           Transforms.ShufflePoints()]
         else:
             transforms = [Transforms.SetCorpFlag(),
                           Transforms.SetDeterministic(),
                           Transforms.SplitSourceRef(),
-                          Transforms.Resampler(num_points),
                           Transforms.RandomTransformSE3_euler(rot_mag=rot_mag, trans_mag=trans_mag),
-                          Transforms.RandomCrop(partial_p_keep),
-                          Transforms.RandomJitter(),
+                          Transforms.RandomCrop1(partial_p_keep),
+                          Transforms.Resampler(num_points,partial_p_keep),   #src
+                          Transforms.RandomJitter(),                         #src
                           Transforms.ShufflePoints()]
 
     elif noise_type == "cropinv":
@@ -230,9 +233,9 @@ def get_transforms(partition: str, num_points: int = 1024,
 
     return transforms
 
-
+##################################
 class ModelNet40(Dataset):
-    def __init__(self, partition='train', unseen=False, transform=None, crossval = False, train_part=False, proportion=0.8):
+    def __init__(self, partition='train', unseen=False, transform=None, crossval = False, train_part=False, proportion=0.8, partial_num=None):
         # data_shape:[B, N, 3]
         self.data, self.label = load_data(partition)
         if unseen and partition=='train' and train_part is False:
@@ -245,6 +248,7 @@ class ModelNet40(Dataset):
         self.transform = transform
         self.crossval = crossval
         self.train_part = train_part
+        self.partial_num = partial_num
         if self.unseen:
             ######## simulate testing on first 20 categories while training on last 20 categories
             if self.partition == 'test':
@@ -265,14 +269,12 @@ class ModelNet40(Dataset):
                 else:
                     self.data = self.data[int(self.label.shape[0]*proportion):-1]
                     self.label = self.label[int(self.label.shape[0]*proportion):-1]
-
+        
     def __getitem__(self, item):
         sample = {'points': self.data[item, :, :], 'label': self.label[item], 'idx': np.array(item, dtype=np.int32)}
 
         if self.transform:
             sample = self.transform(sample)
-            # if item==139:
-            #     np.save(cfg.DATASET.NOISE_TYPE+'sample'+str(item),sample)
 
         T_ab = sample['transform_gt']
         T_ba = np.concatenate((T_ab[:,:3].T, np.expand_dims(-(T_ab[:,:3].T).dot(T_ab[:,3]), axis=1)), axis=-1)
@@ -294,18 +296,40 @@ class ModelNet40(Dataset):
             ref_o3.estimate_normals(search_param=open3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
             sample['points_src'][:, 3:6] = src_o3.normals
             sample['points_ref'][:, 3:6] = ref_o3.normals
-
-
-        ret_dict = {'Ps': [torch.Tensor(x) for x in [sample['points_src'], sample['points_ref']]],
-                    'ns': [torch.tensor(x) for x in [n1_gt, n2_gt]],
-                    'es': [torch.tensor(x) for x in [e1_gt, e2_gt]],
-                    'gt_perm_mat': torch.tensor(sample['perm_mat'].astype('float32')),
-                    'As': [torch.Tensor(x) for x in [A1_gt, A2_gt]],
-                    'Ts': [torch.Tensor(x) for x in [T_ab.astype('float32'), T_ba.astype('float32')]],
-                    'Ins': [torch.Tensor(x) for x in [sample['src_inlier'], sample['ref_inlier']]],
-                    'label': torch.tensor(sample['label']),
-                    'raw': torch.Tensor(sample['points_raw']),
-                    }
+        if self.partial_num==1:
+            ret_dict = {'Ps': [torch.Tensor(x) for x in [sample['points_src'], sample['points_ref']]],
+                        'ns': [torch.tensor(x) for x in [n1_gt, n2_gt]],
+                        'es': [torch.tensor(x) for x in [e1_gt, e2_gt]],
+                        'gt_perm_mat': torch.tensor(sample['perm_mat'].astype('float32')),
+                        'As': [torch.Tensor(x) for x in [A1_gt, A2_gt]],
+                        'Ts': [torch.Tensor(x) for x in [T_ab.astype('float32'), T_ba.astype('float32')]],
+                        'Ins': [torch.Tensor(x) for x in [sample['src_inlier'], sample['ref_inlier']]],
+                        'label': torch.tensor(sample['label']),
+                        'raw': torch.Tensor(sample['points_raw']),
+                        'mpoints_tgt2src':torch.Tensor(sample['mpoints_tgt2src']),
+                        'mpoints_idx':torch.Tensor(sample['mpoints_tgtidx']),
+                        'ori_ref':torch.Tensor(sample['oripoints_ref']),
+                        'ori_src':torch.Tensor(sample['oripoints_src']),
+                        'gt_T':torch.Tensor(sample['transform_gt']),
+                        'gt_euler':torch.Tensor(sample['euler_angle'])
+                        }
+        else:
+            ret_dict = {'Ps': [torch.Tensor(x) for x in [sample['points_src'], sample['points_ref']]],
+                        'ns': [torch.tensor(x) for x in [n1_gt, n2_gt]],
+                        'es': [torch.tensor(x) for x in [e1_gt, e2_gt]],
+                        'gt_perm_mat': torch.tensor(sample['perm_mat'].astype('float32')),
+                        'As': [torch.Tensor(x) for x in [A1_gt, A2_gt]],
+                        'Ts': [torch.Tensor(x) for x in [T_ab.astype('float32'), T_ba.astype('float32')]],
+                        'Ins': [torch.Tensor(x) for x in [sample['src_inlier'], sample['ref_inlier']]],
+                        'label': torch.tensor(sample['label']),
+                        'raw': torch.Tensor(sample['points_raw']),
+                        'ori_ref':torch.Tensor(sample['oripoints_ref']),
+                        'ori_src':torch.Tensor(sample['oripoints_src']),
+                        'gt_T':torch.Tensor(sample['transform_gt']),
+                        'gt_euler':torch.Tensor(sample['euler_angle'])
+                        # 'mpoints_src':torch.Tensor(sample['mpoints_tgt2src']),
+                        # 'mpoints_tgt':torch.Tensor(sample['mpoints_src2tgt'])
+                        }
         return ret_dict
         # return pointcloud1.astype('float32'), pointcloud2.astype('float32'), \
         #        n1_gt, n2_gt, \
@@ -400,6 +424,83 @@ class ShapeNet(Dataset):
         return self.data.shape[0]
 
 
+class Private_dataset(Dataset):
+    def __init__(self, partition='train', unseen=False, transform=None, crossval=False, train_part=False, proportion=0.8, partial_num=None):
+        super(Dataset,self).__init__()
+        self.path="./data/phase_old/"
+        self.df=pd.read_csv(f"./data/phases/{partition}.csv")
+        self.transform=transform
+        self.partial_num = partial_num
+    def __len__(self):
+        return len(self.df)
+    def __getitem__(self,idx):
+        cur_item=self.df.iloc[idx]
+        file_idx=str(cur_item["phase"])
+        cur_file=os.path.join(self.path,f"{file_idx}.txt")
+        pcd=open3d.io.read_point_cloud(cur_file,format='xyz')
+        
+        P1_gt=np.asarray(pcd.points)
+        P1_gt=normalize_pc(P1_gt)
+        src_o3 = open3d.geometry.PointCloud()
+        src_o3.points = open3d.utility.Vector3dVector(P1_gt)
+        src_o3.estimate_normals(search_param=open3d.geometry.KDTreeSearchParamHybrid(radius=0.12, max_nn=30))
+        P1_gt = np.concatenate([P1_gt,src_o3.normals],axis=-1)
+        
+        idx=file_idx
+        sample={'points':P1_gt,'idx':int(idx)}
+        sample=self.transform(sample)
+        T_ab = sample['transform_gt']
+        T_ba = np.concatenate((T_ab[:,:3].T, np.expand_dims(-(T_ab[:,:3].T).dot(T_ab[:,3]), axis=1)), axis=-1)
+        n1_gt, n2_gt = sample['perm_mat'].shape
+        A1_gt, e1_gt = build_graphs(sample['points_src'], sample['src_inlier'], n1_gt, stg="fc")
+        A2_gt, e2_gt = build_graphs(sample['points_ref'], sample['ref_inlier'], n2_gt, stg="fc")
+        src_o3 = open3d.geometry.PointCloud()
+        ref_o3 = open3d.geometry.PointCloud()
+        src_o3.points = open3d.utility.Vector3dVector(sample['points_src'][:, :3])
+        ref_o3.points = open3d.utility.Vector3dVector(sample['points_ref'][:, :3])
+        src_o3.estimate_normals(search_param=open3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+        ref_o3.estimate_normals(search_param=open3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+        sample['points_src'][:, 3:6] = src_o3.normals
+        sample['points_ref'][:, 3:6] = ref_o3.normals
+        
+        if self.partial_num==1:
+            ret_dict = {'Ps': [torch.Tensor(x) for x in [sample['points_src'], sample['points_ref']]],
+                        'ns': [torch.tensor(x) for x in [n1_gt, n2_gt]],
+                        'es': [torch.tensor(x) for x in [e1_gt, e2_gt]],
+                        'gt_perm_mat': torch.tensor(sample['perm_mat'].astype('float32')),
+                        'As': [torch.Tensor(x) for x in [A1_gt, A2_gt]],
+                        'Ts': [torch.Tensor(x) for x in [T_ab.astype('float32'), T_ba.astype('float32')]],
+                        'Ins': [torch.Tensor(x) for x in [sample['src_inlier'], sample['ref_inlier']]],
+                        'label': torch.tensor([int(idx)]),
+                        'raw': torch.Tensor(sample['points_raw']),
+                        'mpoints_tgt2src':torch.Tensor(sample['mpoints_tgt2src']),
+                        'mpoints_idx':torch.Tensor(sample['mpoints_tgtidx']),
+                        'ori_ref':torch.Tensor(sample['oripoints_ref']),
+                        'ori_src':torch.Tensor(sample['oripoints_src']),
+                        'src_res_rate':torch.Tensor([sample['src_res_rate']]),
+                        'gt_T':torch.Tensor(sample['transform_gt']),
+                        'gt_euler':torch.Tensor(sample['euler_angle'])
+                        }
+        else:
+            print("xxxxx")
+            ret_dict = {'Ps': [torch.Tensor(x) for x in [sample['points_src'], sample['points_ref']]],
+                        'ns': [torch.tensor(x) for x in [n1_gt, n2_gt]],
+                        'es': [torch.tensor(x) for x in [e1_gt, e2_gt]],
+                        'gt_perm_mat': torch.tensor(sample['perm_mat'].astype('float32')),
+                        'As': [torch.Tensor(x) for x in [A1_gt, A2_gt]],
+                        'Ts': [torch.Tensor(x) for x in [T_ab.astype('float32'), T_ba.astype('float32')]],
+                        'Ins': [torch.Tensor(x) for x in [sample['src_inlier'], sample['ref_inlier']]],
+                        'label': torch.tensor([int(idx)]),
+                        'raw': torch.Tensor(sample['points_raw']),
+                        'gt_T':torch.Tensor(sample['transform_gt']),
+                        'gt_euler':torch.Tensor(sample['euler_angle'])
+                        # 'mpoints_src':torch.Tensor(sample['mpoints_tgt2src']),
+                        # 'mpoints_tgt':torch.Tensor(sample['mpoints_src2tgt'])
+                        }
+        return ret_dict
+        
+        
+
 def get_realdata_transform(partition: str, num_points: int = 1024,
                            rot_mag: float = 45.0, trans_mag: float = 0.5):
     """Get the list of transformation to be used for training or evaluating RegNet
@@ -458,7 +559,6 @@ class Realdata_3dMatch(Dataset):
     def __getitem__(self, item):
         file = os.path.join(self.root, self.partition, self.files[item])
         data = np.load(file)
-
         sample = {'points':data['x'], 'R':data['R'], 't':np.expand_dims(data['t'], -1),'idx': np.array(item, dtype=np.int32)}
         # 'label': self.files[idx].split('/')[0]
 
@@ -505,21 +605,30 @@ class Realdata_3dMatch(Dataset):
 def get_datasets(partition='train', num_points=1024, unseen=False,
                  noise_type="clean" , rot_mag = 45.0, trans_mag = 0.5,
                  partial_p_keep = [0.7, 0.7], crossval = False, train_part=False):
+    if len(partial_p_keep)==1:
+        partial_num=1
+    else:
+        partial_num=2
     if cfg.DATASET_NAME=='ModelNet40':
         transforms = get_transforms(partition=partition, num_points=num_points , noise_type=noise_type,
                                     rot_mag = rot_mag, trans_mag = trans_mag, partial_p_keep = partial_p_keep)
         transforms = torchvision.transforms.Compose(transforms)
-        datasets = ModelNet40(partition, unseen, transforms, crossval=crossval, train_part=train_part)
+        datasets = ModelNet40(partition, unseen, transforms, crossval=crossval, train_part=train_part, partial_num=partial_num)
     elif cfg.DATASET_NAME=='ShapeNet':
         transforms = get_transforms(partition=partition, num_points=num_points , noise_type=noise_type,
                                     rot_mag = rot_mag, trans_mag = trans_mag, partial_p_keep = partial_p_keep)
         transforms = torchvision.transforms.Compose(transforms)
-        datasets = ShapeNet(partition, unseen, transforms, crossval=crossval, train_part=train_part)
+        datasets = ShapeNet(partition, unseen, transforms, crossval=crossval, train_part=train_part, partial_num=partial_num)
     elif cfg.DATASET_NAME=='3dmatch':
         transforms = get_realdata_transform(partition=partition, num_points=num_points,
                                             rot_mag=rot_mag, trans_mag=trans_mag)
         transforms = torchvision.transforms.Compose(transforms)
         datasets = Realdata_3dMatch(partition=partition, train_part=train_part, transform=transforms)
+    elif cfg.DATASET_NAME=='private':
+        transforms = get_transforms(partition=partition, num_points=num_points , noise_type=noise_type,
+                                    rot_mag = rot_mag, trans_mag = trans_mag, partial_p_keep = partial_p_keep)
+        transforms = torchvision.transforms.Compose(transforms)
+        datasets = Private_dataset(partition=partition, train_part=train_part, transform=transforms, partial_num=partial_num)
     else:
         print('please input ModelNet40 or 3dmatch')
 

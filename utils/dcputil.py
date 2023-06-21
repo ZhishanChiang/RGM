@@ -33,7 +33,7 @@ def quat2mat(quat):
 def npmat2euler(mats, seq='zyx'):
     eulers = []
     for i in range(mats.shape[0]):
-        r = Rotation.from_dcm(mats[i])
+        r = Rotation.from_matrix(mats[i])
         eulers.append(r.as_euler(seq, degrees=True))
     return np.asarray(eulers, dtype='float32')
 

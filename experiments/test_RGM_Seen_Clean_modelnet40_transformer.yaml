@@ -69,6 +69,7 @@ TRAIN:
   MOMENTUM: 0.9
   LR_DECAY: 0.1
   LR_STEP:  # (in epochs)
+    - 5
     - 15
     - 25
 

@@ -6,9 +6,11 @@ from utils import dcputil
 from utils.se3 import transform
 from utils.config import cfg
 from models.correspondSlover import SVDslover
-# from probreg import filterreg, cpd, gmmtree
-# import copy
-
+import copy
+from scipy.spatial.transform import Rotation as R
+import timeit
+import math as m
+import sys
 
 def to_numpy(tensor):
     """Wrapper around .detach().cpu().numpy() """
@@ -66,8 +68,8 @@ def matching_accuracy(pmat_pred, pmat_gt, ns):
 
     assert torch.all((pmat_pred == 0) + (pmat_pred == 1)), 'pmat_pred can noly contain 0/1 elements.'
     assert torch.all((pmat_gt == 0) + (pmat_gt == 1)), 'pmat_gt should noly contain 0/1 elements.'
-    assert torch.all(torch.sum(pmat_pred, dim=-1) <= 1) and torch.all(torch.sum(pmat_pred, dim=-2) <= 1)
     assert torch.all(torch.sum(pmat_gt, dim=-1) <= 1) and torch.all(torch.sum(pmat_gt, dim=-2) <= 1)
+    assert torch.all(torch.sum(pmat_pred, dim=-1) <= 1) and torch.all(torch.sum(pmat_pred, dim=-2) <= 1)
 
     #indices_pred = torch.argmax(pmat_pred, dim=-1)
     #indices_gt = torch.argmax(pmat_gt, dim=-1)
@@ -78,12 +80,12 @@ def matching_accuracy(pmat_pred, pmat_gt, ns):
     pred_num_list = []
     acc_gt = []
     acc_pred = []
-    for b in range(batch_num):
+    for b in range(batch_num):                                  #acc_gt,acc_pred
         #match_num += torch.sum(matched[b, :ns[b]])
         #total_num += ns[b].item()
-        match_num = torch.sum(pmat_pred[b, :ns[b]] * pmat_gt[b, :ns[b]]) + 1e-8
-        gt_num = torch.sum(pmat_gt[b, :ns[b]]) + 1e-8
-        pred_num = torch.sum(pmat_pred[b, :ns[b]]) + 1e-8
+        match_num = torch.sum(pmat_pred[b, :] * pmat_gt[b, :]) + 1e-8   #:ns[b]
+        gt_num = torch.sum(pmat_gt[b, :]) + 1e-8
+        pred_num = torch.sum(pmat_pred[b,:]) + 1e-8
         match_num_list.append(match_num.cpu().numpy())
         gt_num_list.append(gt_num.cpu().numpy())
         pred_num_list.append(pred_num.cpu().numpy())
@@ -148,15 +150,30 @@ def compute_transform(s_perm_mat, P1_gt, P2_gt, R_gt, T_gt, viz=None, usepgm=Tru
     return R_pre, T_pre
 
 
-def compute_metrics(s_perm_mat, P1_gt, P2_gt, R_gt, T_gt, viz=None, usepgm=True, userefine=False):
+def compute_metrics(s_perm_mat, P1_gt, P2_gt, R_gt, T_gt, viz=None, usepgm=True, userefine=False, slct_src=None, slct_tar=None):
     # compute r,t
+#     for i in range(len(slct_src)):   #selected point of point cloud
+#         cur_slct_src=slct_src[i]
+#         cur_slct_src=torch.repeat_interleave(cur_slct_src,P1_gt.shape[-1],dim=-1)
+#         P1_gt=torch.gather(P1_gt,1,cur_slct_src)
+        
+#         cur_slct_tar=slct_tar[i]
+#         cur_slct_tar=torch.repeat_interleave(cur_slct_tar,P2_gt.shape[-1],dim=-1)
+#         P2_gt=torch.gather(P2_gt,1,cur_slct_tar)
+        
     R_pre, T_pre = compute_transform(s_perm_mat, P1_gt, P2_gt, R_gt, T_gt, viz=viz, usepgm=usepgm, userefine=userefine)
 
     r_pre_euler_deg = dcputil.npmat2euler(R_pre.detach().cpu().numpy(), seq='xyz')
     r_gt_euler_deg = dcputil.npmat2euler(R_gt.detach().cpu().numpy(), seq='xyz')
+    # print("********************************")
+    # print(np.abs(r_gt_euler_deg-r_pre_euler_deg))
+    # print(r_gt_euler_deg)
+    # print(r_pre_euler_deg)
+    # print("********************************")
     r_mse = np.mean((r_gt_euler_deg - r_pre_euler_deg) ** 2, axis=1)
     r_mae = np.mean(np.abs(r_gt_euler_deg - r_pre_euler_deg), axis=1)
     t_mse = torch.mean((T_gt - T_pre) ** 2, dim=1)
+    # print("T",T_gt,T_pre)
     t_mae = torch.mean(torch.abs(T_gt - T_pre), dim=1)
 
     # Rotation, translation errors (isotropic, i.e. doesn't depend on error
@@ -212,9 +229,12 @@ def compute_metrics(s_perm_mat, P1_gt, P2_gt, R_gt, T_gt, viz=None, usepgm=True,
                'clip_chamfer_dist': to_numpy(clip_chamfer_dist),
                'pre_transform':np.concatenate((to_numpy(R_pre),to_numpy(T_pre)[:,:,None]),axis=2),
                'gt_transform':np.concatenate((to_numpy(R_gt),to_numpy(T_gt)[:,:,None]),axis=2),
-               'cpd_dis_nomean':to_numpy(correspond_dis)}
+               'cpd_dis_nomean':to_numpy(correspond_dis),
+               'P1_t':P1_transformed}
 
-    return metrics
+    
+
+    return metrics, np.abs(r_gt_euler_deg-r_pre_euler_deg),r_pre_euler_deg,r_gt_euler_deg,T_pre,T_gt
 
 
 def compute_othermethod_metrics(transform_para, P1_gt, P2_gt, R_gt, T_gt, viz=None, usepgm=True, userefine=False):
